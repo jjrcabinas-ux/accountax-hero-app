@@ -1,81 +1,127 @@
 import { useRouter } from 'expo-router';
-import { useState } from 'react';
-import { Pressable, StyleSheet, Switch, TextInput, View } from 'react-native';
+import { useMemo, useState } from 'react';
+import { Alert, Pressable, StyleSheet, Switch, TextInput, View } from 'react-native';
 
+import { loadCustomers } from '@/books/customers';
+import {
+  addDays,
+  invoiceNumberTaken,
+  invoiceTotals,
+  newId,
+  nextDocNumber,
+  nextInvoiceNumber,
+  statusOf,
+  TERMS,
+  upsertInvoice,
+  type Invoice,
+  type InvoiceLine,
+} from '@/books/invoices';
 import { Icon } from '@/components/icon';
 import { Sheet } from '@/components/screen';
 import { Txt } from '@/components/txt';
-import { AmountLine, Button, Card, Chips, Field } from '@/components/ui';
+import { AmountLine, Button, Card, Chips } from '@/components/ui';
 import { Radius, Spacing } from '@/constants/theme';
-import { customers } from '@/data/sample';
-import { addInvoice, invoiceNet, invoiceTotal, invoiceVat, nextInvoiceNumber } from '@/data/store';
+import { liveInvoices } from '@/data/live';
 import { useTheme } from '@/hooks/use-theme';
-import { addDays, peso, todayIso } from '@/utils/money';
+import { peso, todayIso } from '@/utils/money';
 
-type Draft = { description: string; qty: string; price: string };
-const blank = (): Draft => ({ description: '', qty: '1', price: '' });
-
-const TERMS = [
-  { key: '0', label: 'Due now' },
-  { key: '15', label: '15 days' },
-  { key: '30', label: '30 days' },
-  { key: '60', label: '60 days' },
-] as const;
+type Draft = { item: string; qty: string; rate: string };
+const blank = (): Draft => ({ item: '', qty: '1', rate: '' });
+const TERM_CHIPS = TERMS.filter((x) => [0, 15, 30, 60].includes(x.days)).map((x) => ({ key: x.label, label: x.label }));
 
 export default function NewInvoiceScreen() {
   const t = useTheme();
   const router = useRouter();
-  const [customer, setCustomer] = useState(customers[0].name);
-  const [terms, setTerms] = useState<(typeof TERMS)[number]['key']>('30');
+
+  // Customers billed most recently first.
+  const customers = useMemo(() => {
+    const last = new Map<string, string>();
+    liveInvoices().forEach((i) => {
+      if ((last.get(i.customerId) ?? '') < i.invoiceDate) last.set(i.customerId, i.invoiceDate);
+    });
+    return loadCustomers().sort((a, b) => (last.get(b.id) ?? '').localeCompare(last.get(a.id) ?? '') || a.name.localeCompare(b.name));
+  }, []);
+
+  const [customerId, setCustomerId] = useState(customers[0]?.id ?? '');
+  const [showAll, setShowAll] = useState(false);
+  const [terms, setTerms] = useState('Net 30');
   const [vatable, setVatable] = useState(true);
   const [drafts, setDrafts] = useState<Draft[]>([blank()]);
+  const [number] = useState(() => nextInvoiceNumber());
 
   const today = todayIso();
-  const lines = drafts
-    .map((d) => ({ description: d.description.trim(), qty: Number(d.qty) || 0, price: Number(d.price.replace(/,/g, '')) || 0 }))
-    .filter((l) => l.description && l.qty > 0 && l.price > 0);
-  const preview = { lines, vatable };
-  const valid = lines.length > 0;
+  const customer = customers.find((c) => c.id === customerId);
+  const lines: InvoiceLine[] = drafts
+    .map((d) => ({ id: newId(), item: d.item.trim(), description: '', qty: Number(d.qty) || 0, rate: Number(d.rate.replace(/,/g, '')) || 0, vat: vatable ? ('vatable' as const) : ('exempt' as const) }))
+    .filter((l) => l.item && l.qty > 0 && l.rate > 0);
+  const totals = invoiceTotals({ lines, amountsAre: 'exclusive' });
+  const valid = !!customer && lines.length > 0;
 
-  const update = (i: number, patch: Partial<Draft>) =>
-    setDrafts((ds) => ds.map((d, idx) => (idx === i ? { ...d, ...patch } : d)));
+  const update = (i: number, patch: Partial<Draft>) => setDrafts((ds) => ds.map((d, idx) => (idx === i ? { ...d, ...patch } : d)));
 
   function save() {
-    if (!valid) return;
-    const inv = addInvoice({ customer, date: today, dueDate: addDays(today, Number(terms)), lines, vatable });
+    if (!valid || !customer) return;
+    const days = TERMS.find((x) => x.label === terms)?.days ?? 30;
+    const inv: Invoice = {
+      id: newId(),
+      number,
+      customerId: customer.id,
+      customerName: customer.name,
+      customerTin: customer.tin ?? '',
+      customerEmail: undefined,
+      billingAddress: (customer.address ?? '').trim(),
+      invoiceDate: today,
+      dueDate: addDays(today, days),
+      terms,
+      amountsAre: 'exclusive',
+      lines,
+      message: '',
+      status: statusOf({ lines, amountsAre: 'exclusive', payments: [] }),
+      payments: [],
+      createdAt: new Date().toISOString(),
+    };
+    // Same rule as the web: if another device took this number meanwhile, use the next free one.
+    if (invoiceNumberTaken(inv.number, inv.id, 'invoice')) {
+      inv.number = nextDocNumber('invoice');
+      Alert.alert(`Saved as ${inv.number}`, `${number} was already used by another invoice, so this one took the next free number.`);
+    }
+    upsertInvoice(inv);
     router.replace({ pathname: '/invoice/[id]', params: { id: inv.id } });
   }
 
   const inputStyle = [styles.cell, { color: t.text, borderColor: t.border, backgroundColor: t.surface }];
+  const customerChips = (showAll ? customers : customers.slice(0, 6)).map((c) => ({ key: c.id, label: c.name }));
 
   return (
     <Sheet>
-      <Txt variant="caption">
-        {nextInvoiceNumber()} · dated today
-      </Txt>
+      <Txt variant="caption">{number} · dated today</Txt>
 
       <Txt variant="label">Customer</Txt>
-      <Chips options={customers.map((c) => ({ key: c.name, label: c.name }))} value={customer} onChange={setCustomer} />
+      {customers.length === 0 ? (
+        <Txt variant="caption">No customers yet. Add one in the web app first.</Txt>
+      ) : (
+        <Chips options={customerChips} value={customerId} onChange={setCustomerId} />
+      )}
+      {customers.length > 6 ? (
+        <Button kind="ghost" label={showAll ? 'Show fewer customers' : `Show all ${customers.length} customers`} onPress={() => setShowAll((x) => !x)} />
+      ) : null}
 
       <Txt variant="label">Payment terms</Txt>
-      <Chips options={TERMS} value={terms} onChange={setTerms} />
+      <Chips options={TERM_CHIPS} value={terms} onChange={setTerms} />
 
       <Txt variant="label">Items</Txt>
       {drafts.map((d, i) => (
         <Card key={i} style={{ gap: Spacing.two }}>
           <View style={styles.lineHead}>
             <TextInput
-              value={d.description}
-              onChangeText={(v) => update(i, { description: v })}
-              placeholder="Description"
+              value={d.item}
+              onChangeText={(v) => update(i, { item: v })}
+              placeholder="Product or service"
               placeholderTextColor={t.textSecondary}
               style={[inputStyle, { flex: 1 }]}
             />
             {drafts.length > 1 ? (
-              <Pressable
-                accessibilityLabel="Remove item"
-                onPress={() => setDrafts((ds) => ds.filter((_, idx) => idx !== i))}
-                style={styles.removeBtn}>
+              <Pressable accessibilityLabel="Remove item" onPress={() => setDrafts((ds) => ds.filter((_, idx) => idx !== i))} style={styles.removeBtn}>
                 <Icon ios="trash" md="delete" size={18} color={t.negative} />
               </Pressable>
             ) : null}
@@ -90,11 +136,12 @@ export default function NewInvoiceScreen() {
             />
             <Txt variant="body" color="textSecondary">×</Txt>
             <TextInput
-              value={d.price}
-              onChangeText={(v) => update(i, { price: v })}
-              placeholder="Unit price ₱"
+              value={d.rate}
+              onChangeText={(v) => update(i, { rate: v })}
+              placeholder="Rate ₱ (before VAT)"
               placeholderTextColor={t.textSecondary}
               keyboardType="decimal-pad"
+              accessibilityLabel="Rate"
               style={[inputStyle, { flex: 1 }]}
             />
           </View>
@@ -111,13 +158,11 @@ export default function NewInvoiceScreen() {
           <Switch value={vatable} onValueChange={setVatable} trackColor={{ true: t.accent }} />
         </View>
         <View style={{ marginTop: Spacing.two }}>
-          <AmountLine label={vatable ? 'VATable sales' : 'VAT-exempt sales'} value={peso(invoiceNet(preview))} />
-          <AmountLine label="VAT (12%)" value={peso(invoiceVat(preview))} />
-          <AmountLine label="Total amount due" value={peso(invoiceTotal(preview))} strong />
+          <AmountLine label={vatable ? 'VATable sales' : 'VAT-exempt sales'} value={peso(totals.subtotal)} />
+          <AmountLine label="VAT (12%)" value={peso(totals.vat)} />
+          <AmountLine label="Total amount due" value={peso(totals.total)} strong />
         </View>
       </Card>
-
-      <Field label="Customer email" value={customers.find((c) => c.name === customer)?.email ?? ''} editable={false} />
 
       <Button label="Create invoice" onPress={save} disabled={!valid} />
     </Sheet>

@@ -41,11 +41,18 @@
           "cameraPermission": "AccounTax Hero uses the camera to photograph receipts for your expense records.",
           "photosPermission": "AccounTax Hero lets you attach receipt photos from your library."
         }
+      ],
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "AccounTax Hero uses the camera to scan your sign-in code and photograph receipts.",
+          "recordAudioAndroid": false
+        }
       ]
     ],
     "experiments": {
       "typedRoutes": true,
-      "reactCompiler": true
+      "reactCompiler": false
     }
   }
 }

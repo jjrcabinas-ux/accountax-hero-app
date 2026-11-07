@@ -2,57 +2,73 @@ import { useRouter } from 'expo-router';
 import { useMemo, useState } from 'react';
 import { Pressable, StyleSheet, View } from 'react-native';
 
+import { incomeStatement } from '@/books/statements';
+import { canWrite } from '@/books/sync';
 import { Icon } from '@/components/icon';
 import { Screen } from '@/components/screen';
 import { Txt } from '@/components/txt';
 import { Card, Chips, IconBadge, Pill, Row, SectionHeader } from '@/components/ui';
 import { Brand, Radius, Spacing } from '@/constants/theme';
-import { deadlines } from '@/data/sample';
 import {
   cashOnHand,
-  invoiceStatus,
+  expenseTotal,
   invoiceTotal,
+  liveExpenses,
+  liveInvoices,
   periods,
   receivables,
-  summary,
-  useBooks,
-} from '@/data/store';
+  upcomingDeadlines,
+  useBooksVersion,
+} from '@/data/live';
 import { useTheme } from '@/hooks/use-theme';
-import { daysBetween, peso, pesoShort, shortDate, todayIso } from '@/utils/money';
+import { peso, pesoShort, shortDate, todayIso } from '@/utils/money';
 
 export default function HomeScreen() {
   const t = useTheme();
   const router = useRouter();
-  const books = useBooks();
+  const v = useBooksVersion();
   const today = todayIso();
   const options = useMemo(() => periods(today), [today]);
   const [periodKey, setPeriodKey] = useState('month');
   const period = options.find((p) => p.key === periodKey) ?? options[0];
 
-  const s = summary(books, period);
-  const cash = cashOnHand(books);
-  const ar = receivables(books);
-  const overdue = books.invoices.filter((i) => invoiceStatus(i, today) === 'Overdue');
-  const upcoming = deadlines.filter((d) => d.due >= today).slice(0, 3);
+  const figures = useMemo(() => {
+    const is = incomeStatement(period.from, period.to);
+    const invs = liveInvoices();
+    const exps = liveExpenses();
+    const activity = [
+      ...invs.map((i) => ({ id: i.id, date: i.invoiceDate, kind: 'invoice' as const, title: i.customerName || 'No customer', sub: i.number, amount: invoiceTotal(i) })),
+      ...exps.map((e) => ({ id: e.id, date: e.date, kind: 'expense' as const, title: e.supplierName || 'No supplier', sub: e.number, amount: -expenseTotal(e) })),
+    ]
+      .sort((a, b) => (a.date < b.date ? 1 : -1))
+      .slice(0, 5);
+    return {
+      sales: is.totalRevenue,
+      spend: is.totalCOS + is.totalOpex,
+      net: is.netIncome,
+      cash: cashOnHand(today),
+      ar: receivables(today),
+      deadlines: upcomingDeadlines(3, today),
+      activity,
+    };
+    // v: recompute when the books change
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [v, period.from, period.to, today]);
 
-  const activity = [
-    ...books.invoices.map((i) => ({ id: i.id, date: i.date, kind: 'invoice' as const, title: i.customer, sub: i.number, amount: invoiceTotal(i) })),
-    ...books.expenses.map((e) => ({ id: e.id, date: e.date, kind: 'expense' as const, title: e.supplier, sub: e.category, amount: -e.amount })),
-  ]
-    .sort((a, b) => (a.date < b.date ? 1 : -1))
-    .slice(0, 5);
+  const { sales, spend, net, cash, ar, deadlines, activity } = figures;
+  const canInvoice = canWrite('invoices');
+  const canExpense = canWrite('expenses');
 
   return (
     <Screen title="Home">
-      {/* Cash hero */}
       <View style={[styles.hero, { backgroundColor: t.hero }]}>
         <View style={styles.heroTop}>
           <Txt variant="label" style={{ color: 'rgba(255,255,255,0.65)' }}>
-            Cash on hand
+            Cash and bank
           </Txt>
           <Icon ios="banknote" md="account_balance_wallet" size={20} color={Brand.emerald} />
         </View>
-        <Txt variant="display" style={{ color: '#fff' }} accessibilityLabel={`Cash on hand ${peso(cash)}`}>
+        <Txt variant="display" style={{ color: '#fff' }} accessibilityLabel={`Cash and bank ${peso(cash)}`}>
           {peso(cash)}
         </Txt>
         <View style={styles.heroFoot}>
@@ -68,104 +84,92 @@ export default function HomeScreen() {
             <Txt variant="caption" style={{ color: 'rgba(255,255,255,0.6)' }}>
               Overdue
             </Txt>
-            <Txt variant="figure" style={{ color: overdue.length ? '#fca5a5' : '#fff' }}>
-              {overdue.length} invoice{overdue.length === 1 ? '' : 's'}
+            <Txt variant="figure" style={{ color: ar.overdue.length ? '#fca5a5' : '#fff' }}>
+              {ar.overdue.length} invoice{ar.overdue.length === 1 ? '' : 's'}
             </Txt>
           </View>
         </View>
       </View>
 
-      {/* Quick actions */}
-      <View style={styles.actions}>
-        <QuickAction
-          label="Snap receipt"
-          ios="camera.fill"
-          md="photo_camera"
-          onPress={() => router.push('/expense/new')}
-        />
-        <QuickAction
-          label="New invoice"
-          ios="doc.badge.plus"
-          md="request_quote"
-          onPress={() => router.push('/invoice/new')}
-        />
-      </View>
+      {canInvoice || canExpense ? (
+        <View style={styles.actions}>
+          {canExpense ? <QuickAction label="Snap receipt" ios="camera.fill" md="photo_camera" onPress={() => router.push('/expense/new')} /> : null}
+          {canInvoice ? <QuickAction label="New invoice" ios="doc.badge.plus" md="request_quote" onPress={() => router.push('/invoice/new')} /> : null}
+        </View>
+      ) : null}
 
-      {/* Period snapshot */}
       <SectionHeader title="Snapshot" />
       <Chips options={options} value={periodKey} onChange={setPeriodKey} />
       <View style={styles.tiles}>
-        <Tile label="Sales" value={pesoShort(s.sales)} hint={`${s.invoiceCount} invoices · net of VAT`} />
-        <Tile label="Expenses" value={pesoShort(s.expenses)} hint={`${s.expenseCount} records · net of VAT`} />
+        <Tile label="Sales" value={pesoShort(sales)} hint="Revenue, net of VAT" />
+        <Tile label="Expenses" value={pesoShort(spend)} hint="Cost of sales + expenses" />
       </View>
       <Card>
         <View style={styles.netRow}>
           <View>
-            <Txt variant="label">Net income</Txt>
+            <Txt variant="label">{net < 0 ? 'Net loss' : 'Net income'}</Txt>
             <Txt variant="caption">{period.label}</Txt>
           </View>
-          <Txt variant="title" style={{ color: s.netIncome < 0 ? t.negative : t.positive, fontVariant: ['tabular-nums'] }}>
-            {peso(s.netIncome, { decimals: false })}
+          <Txt variant="title" style={{ color: net < 0 ? t.negative : t.positive, fontVariant: ['tabular-nums'] }}>
+            {peso(net, { decimals: false })}
           </Txt>
         </View>
-        <MarginBar sales={s.sales} expenses={s.expenses} />
+        <MarginBar sales={sales} expenses={spend} />
       </Card>
 
-      {/* BIR deadlines */}
       <SectionHeader title="BIR deadlines" />
       <Card padded={false}>
-        {upcoming.map((d, i) => {
-          const days = daysBetween(today, d.due);
-          return (
-            <Row
-              key={`${d.form}-${d.due}`}
-              last={i === upcoming.length - 1}
-              leading={
-                <IconBadge tone={days <= 5 ? 'warning' : 'accent'}>
-                  <Icon ios="calendar" md="event" size={18} color={days <= 5 ? t.warning : t.accent} />
-                </IconBadge>
-              }
-              title={`${d.form} · ${d.title}`}
-              subtitle={`Due ${shortDate(d.due)}`}
-              trailing={<Pill label={days === 0 ? 'Today' : `${days}d`} tone={days <= 5 ? 'warning' : 'neutral'} />}
-            />
-          );
-        })}
-      </Card>
-
-      {/* Recent activity */}
-      <SectionHeader title="Recent activity" />
-      <Card padded={false}>
-        {activity.map((a, i) => (
+        {deadlines.map((d, i) => (
           <Row
-            key={a.id}
-            last={i === activity.length - 1}
-            onPress={a.kind === 'invoice' ? () => router.push({ pathname: '/invoice/[id]', params: { id: a.id } }) : undefined}
+            key={`${d.key}-${d.date}`}
+            last={i === deadlines.length - 1}
             leading={
-              <IconBadge>
-                <Icon
-                  ios={a.kind === 'invoice' ? 'doc.text' : 'receipt'}
-                  md={a.kind === 'invoice' ? 'request_quote' : 'receipt_long'}
-                  size={18}
-                  color={t.accent}
-                />
+              <IconBadge tone={d.daysLeft <= 5 ? 'warning' : 'accent'}>
+                <Icon ios="calendar" md="event" size={18} color={d.daysLeft <= 5 ? t.warning : t.accent} />
               </IconBadge>
             }
-            title={a.title}
-            subtitle={`${a.sub} · ${shortDate(a.date)}`}
-            trailing={
-              <Txt variant="figure" style={{ color: a.amount < 0 ? t.text : t.positive }}>
-                {a.amount < 0 ? `−${peso(-a.amount)}` : `+${peso(a.amount)}`}
-              </Txt>
-            }
+            title={d.label}
+            subtitle={`${d.cadence} · due ${shortDate(d.date)}`}
+            trailing={<Pill label={d.daysLeft === 0 ? 'Today' : `${d.daysLeft}d`} tone={d.daysLeft <= 5 ? 'warning' : 'neutral'} />}
           />
         ))}
       </Card>
+
+      <SectionHeader title="Recent activity" />
+      {activity.length === 0 ? (
+        <Card>
+          <Txt variant="body" color="textSecondary" style={{ textAlign: 'center' }}>
+            Nothing recorded yet.
+          </Txt>
+        </Card>
+      ) : (
+        <Card padded={false}>
+          {activity.map((a, i) => (
+            <Row
+              key={a.id}
+              last={i === activity.length - 1}
+              onPress={a.kind === 'invoice' ? () => router.push({ pathname: '/invoice/[id]', params: { id: a.id } }) : undefined}
+              leading={
+                <IconBadge>
+                  <Icon ios={a.kind === 'invoice' ? 'doc.text' : 'receipt'} md={a.kind === 'invoice' ? 'request_quote' : 'receipt_long'} size={18} color={t.accent} />
+                </IconBadge>
+              }
+              title={a.title}
+              subtitle={`${a.sub} · ${shortDate(a.date)}`}
+              trailing={
+                <Txt variant="figure" style={{ color: a.amount < 0 ? t.text : t.positive }}>
+                  {a.amount < 0 ? `−${peso(-a.amount)}` : `+${peso(a.amount)}`}
+                </Txt>
+              }
+            />
+          ))}
+        </Card>
+      )}
     </Screen>
   );
 }
 
-function QuickAction({ label, ios, md, onPress }: { label: string; ios: string; md: 'photo_camera' | 'request_quote'; onPress: () => void }) {
+function QuickAction({ label, ios, md, onPress }: { label: string; ios: 'camera.fill' | 'doc.badge.plus'; md: 'photo_camera' | 'request_quote'; onPress: () => void }) {
   const t = useTheme();
   return (
     <Pressable
@@ -173,7 +177,7 @@ function QuickAction({ label, ios, md, onPress }: { label: string; ios: string; 
       onPress={onPress}
       style={({ pressed }) => [styles.action, { backgroundColor: t.surface, borderColor: t.border, opacity: pressed ? 0.7 : 1 }]}>
       <IconBadge>
-        <Icon ios={ios as never} md={md} size={20} color={t.accent} />
+        <Icon ios={ios} md={md} size={20} color={t.accent} />
       </IconBadge>
       <Txt variant="bodyStrong">{label}</Txt>
     </Pressable>

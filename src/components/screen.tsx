@@ -3,7 +3,7 @@ import { ScrollView, StyleSheet, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { BottomTabInset, MaxContentWidth, Spacing } from '@/constants/theme';
-import { business } from '@/data/sample';
+import { business, useBooksVersion } from '@/data/live';
 import { useTheme } from '@/hooks/use-theme';
 
 import { Txt } from './txt';
@@ -13,6 +13,7 @@ import { BrandMark } from './ui';
 export function Screen({ title, action, children }: { title: string; action?: ReactNode; children: ReactNode }) {
   const t = useTheme();
   const insets = useSafeAreaInsets();
+  useBooksVersion();
   return (
     <ScrollView
       style={{ backgroundColor: t.background }}
@@ -29,7 +30,7 @@ export function Screen({ title, action, children }: { title: string; action?: Re
               AccounTax<Txt variant="bodyStrong" style={{ color: t.accent }}> Hero</Txt>
             </Txt>
             <Txt variant="caption" numberOfLines={1}>
-              {business.name}
+              {business().name}
             </Txt>
           </View>
         </View>

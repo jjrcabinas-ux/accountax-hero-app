@@ -1,57 +1,84 @@
 import { useRouter } from 'expo-router';
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 
+import { invoiceBalance, isOverdue, statusOf } from '@/books/invoices';
+import { canRead, canWrite } from '@/books/sync';
 import { Icon } from '@/components/icon';
 import { Screen } from '@/components/screen';
 import { Txt } from '@/components/txt';
 import { Button, Card, Chips, Pill, Row } from '@/components/ui';
 import { Spacing } from '@/constants/theme';
-import { invoiceStatus, invoiceTotal, STATUS_TONE, useBooks } from '@/data/store';
-import type { InvoiceStatus } from '@/data/types';
+import { invoiceStatus, invoiceTotal, liveInvoices, useBooksVersion } from '@/data/live';
 import { useTheme } from '@/hooks/use-theme';
 import { peso, shortDate, todayIso } from '@/utils/money';
 
 const FILTERS = [
   { key: 'all', label: 'All' },
-  { key: 'Unpaid', label: 'Unpaid' },
-  { key: 'Overdue', label: 'Overdue' },
-  { key: 'Paid', label: 'Paid' },
+  { key: 'open', label: 'Unpaid' },
+  { key: 'overdue', label: 'Overdue' },
+  { key: 'paid', label: 'Paid' },
 ] as const;
 type Filter = (typeof FILTERS)[number]['key'];
 
 export default function InvoicesScreen() {
   const t = useTheme();
   const router = useRouter();
-  const books = useBooks();
+  const v = useBooksVersion();
   const today = todayIso();
   const [filter, setFilter] = useState<Filter>('all');
 
-  const withStatus = books.invoices
-    .map((i) => ({ ...i, status: invoiceStatus(i, today), total: invoiceTotal(i) }))
-    .sort((a, b) => (a.date < b.date ? 1 : -1));
-  const list = filter === 'all' ? withStatus : withStatus.filter((i) => i.status === filter);
-  const sum = (s: InvoiceStatus) => withStatus.filter((i) => i.status === s).reduce((a, i) => a + i.total, 0);
+  const { all, unpaid, overdue } = useMemo(() => {
+    const list = liveInvoices();
+    const open = list.filter((i) => invoiceBalance(i) > 0.005);
+    return {
+      all: list,
+      unpaid: open.reduce((s, i) => s + invoiceBalance(i), 0),
+      overdue: open.filter((i) => isOverdue(i, today)).reduce((s, i) => s + invoiceBalance(i), 0),
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [v, today]);
+
+  const list =
+    filter === 'all'
+      ? all
+      : filter === 'paid'
+        ? all.filter((i) => statusOf(i) === 'paid')
+        : filter === 'overdue'
+          ? all.filter((i) => isOverdue(i, today))
+          : all.filter((i) => statusOf(i) !== 'paid');
+
+  if (!canRead('invoices')) {
+    return (
+      <Screen title="Invoices">
+        <Card>
+          <Txt variant="body" color="textSecondary">Invoices aren’t part of your role in this business.</Txt>
+        </Card>
+      </Screen>
+    );
+  }
 
   return (
     <Screen title="Invoices">
-      <Button
-        label="New invoice"
-        icon={<Icon ios="plus" md="add" size={20} color={t.accent === '#34d399' ? '#06281d' : '#fff'} />}
-        onPress={() => router.push('/invoice/new')}
-      />
+      {canWrite('invoices') ? (
+        <Button
+          label="New invoice"
+          icon={<Icon ios="plus" md="add" size={20} color={t.accent === '#34d399' ? '#06281d' : '#fff'} />}
+          onPress={() => router.push('/invoice/new')}
+        />
+      ) : null}
 
       <View style={styles.tiles}>
         <Card style={{ flex: 1 }}>
           <Txt variant="label">Unpaid</Txt>
           <Txt variant="heading" style={{ fontVariant: ['tabular-nums'] }}>
-            {peso(sum('Unpaid'), { decimals: false })}
+            {peso(unpaid, { decimals: false })}
           </Txt>
         </Card>
         <Card style={{ flex: 1 }}>
           <Txt variant="label">Overdue</Txt>
-          <Txt variant="heading" style={{ color: t.negative, fontVariant: ['tabular-nums'] }}>
-            {peso(sum('Overdue'), { decimals: false })}
+          <Txt variant="heading" style={{ color: overdue > 0 ? t.negative : t.text, fontVariant: ['tabular-nums'] }}>
+            {peso(overdue, { decimals: false })}
           </Txt>
         </Card>
       </View>
@@ -61,26 +88,29 @@ export default function InvoicesScreen() {
       {list.length === 0 ? (
         <Card>
           <Txt variant="body" color="textSecondary" style={{ textAlign: 'center' }}>
-            No {filter.toLowerCase()} invoices.
+            {filter === 'all' ? 'No invoices yet.' : `No ${FILTERS.find((f) => f.key === filter)!.label.toLowerCase()} invoices.`}
           </Txt>
         </Card>
       ) : (
         <Card padded={false}>
-          {list.map((i, idx) => (
-            <Row
-              key={i.id}
-              last={idx === list.length - 1}
-              onPress={() => router.push({ pathname: '/invoice/[id]', params: { id: i.id } })}
-              title={i.customer}
-              subtitle={`${i.number} · due ${shortDate(i.dueDate)}`}
-              trailing={
-                <View style={styles.trailing}>
-                  <Txt variant="figure">{peso(i.total)}</Txt>
-                  <Pill label={i.status} tone={STATUS_TONE[i.status]} />
-                </View>
-              }
-            />
-          ))}
+          {list.map((i, idx) => {
+            const st = invoiceStatus(i, today);
+            return (
+              <Row
+                key={i.id}
+                last={idx === list.length - 1}
+                onPress={() => router.push({ pathname: '/invoice/[id]', params: { id: i.id } })}
+                title={i.customerName || 'No customer'}
+                subtitle={`${i.number} · due ${shortDate(i.dueDate)}`}
+                trailing={
+                  <View style={styles.trailing}>
+                    <Txt variant="figure">{peso(invoiceTotal(i))}</Txt>
+                    <Pill label={st.label} tone={st.tone} />
+                  </View>
+                }
+              />
+            );
+          })}
         </Card>
       )}
     </Screen>

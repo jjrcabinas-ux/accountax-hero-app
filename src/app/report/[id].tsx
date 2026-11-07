@@ -2,68 +2,91 @@ import { Stack, useLocalSearchParams } from 'expo-router';
 import { useMemo, useState } from 'react';
 import { ScrollView, StyleSheet, View } from 'react-native';
 
+import { balanceSheet, incomeStatement } from '@/books/statements';
 import { Sheet } from '@/components/screen';
 import { Txt } from '@/components/txt';
 import { AmountLine, Card, Chips } from '@/components/ui';
 import { Spacing } from '@/constants/theme';
-import { business } from '@/data/sample';
-import { AGING_BUCKETS, arAging, balanceSheet, periods, profitAndLoss, useBooks } from '@/data/store';
+import { AGING_BUCKETS, arAging, business, periods, useBooksVersion } from '@/data/live';
 import { useTheme } from '@/hooks/use-theme';
 import { longDate, peso, todayIso } from '@/utils/money';
 
 const TITLES: Record<string, string> = { pl: 'Profit and loss', bs: 'Balance sheet', ar: 'AR aging' };
+type Line = { id: string; label: string; amount: number };
 
 export default function ReportScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
+  useBooksVersion();
+  const biz = business();
   return (
     <Sheet>
       <Stack.Screen options={{ title: TITLES[id] ?? 'Report' }} />
       <View>
-        <Txt variant="heading">{business.name}</Txt>
-        <Txt variant="caption">TIN {business.tin}</Txt>
+        <Txt variant="heading">{biz.name}</Txt>
+        {biz.tin ? <Txt variant="caption">TIN {biz.tin}</Txt> : null}
       </View>
-      {id === 'pl' ? <ProfitAndLoss /> : id === 'bs' ? <BalanceSheet /> : id === 'ar' ? <Aging /> : (
-        <Txt variant="body">Unknown report.</Txt>
-      )}
+      {id === 'pl' ? <ProfitAndLoss /> : id === 'bs' ? <BalanceSheet /> : id === 'ar' ? <Aging /> : <Txt variant="body">Unknown report.</Txt>}
     </Sheet>
+  );
+}
+
+function Section({ title, lines, total, totalLabel }: { title: string; lines: Line[]; total: number; totalLabel: string }) {
+  return (
+    <Card>
+      <Txt variant="label">{title}</Txt>
+      {lines.length === 0 ? <Txt variant="caption">None</Txt> : null}
+      {lines.map((r) => (
+        <AmountLine key={r.id} label={r.label} value={peso(r.amount)} indent />
+      ))}
+      <AmountLine label={totalLabel} value={peso(total)} strong />
+    </Card>
   );
 }
 
 function ProfitAndLoss() {
   const t = useTheme();
-  const books = useBooks();
+  const v = useBooksVersion();
   const options = useMemo(() => periods(todayIso()), []);
   const [key, setKey] = useState('quarter');
   const p = options.find((o) => o.key === key) ?? options[0];
-  const pl = profitAndLoss(books, p);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const is = useMemo(() => incomeStatement(p.from, p.to), [v, p.from, p.to]);
+  const expenses = is.totalOpex;
   return (
     <>
       <Chips options={options} value={key} onChange={setKey} />
       <Txt variant="caption">
-        {longDate(p.from)} – {longDate(p.to)} · amounts net of VAT
+        {longDate(p.from)} – {longDate(p.to)}
       </Txt>
-      <Card>
-        <Txt variant="label">Revenue</Txt>
-        {pl.revenue.map((r) => (
-          <AmountLine key={r.label} label={r.label} value={peso(r.amount)} indent />
-        ))}
-        <AmountLine label="Total revenue" value={peso(pl.totalRevenue)} strong />
-      </Card>
-      <Card>
-        <Txt variant="label">Operating expenses</Txt>
-        {pl.expenses.length === 0 ? <Txt variant="caption">None in this period</Txt> : null}
-        {pl.expenses.map((r) => (
-          <AmountLine key={r.label} label={r.label} value={peso(r.amount)} indent />
-        ))}
-        <AmountLine label="Total expenses" value={peso(pl.totalExpenses)} strong />
-      </Card>
+      <Section title="Revenue" lines={is.lines.revenue} total={is.totalRevenue} totalLabel="Total revenue" />
+      {is.totalCOS ? <Section title="Cost of sales" lines={is.lines.cos} total={is.totalCOS} totalLabel="Total cost of sales" /> : null}
+      {is.totalCOS ? (
+        <Card>
+          <AmountLine label="Gross profit" value={peso(is.grossProfit)} strong />
+        </Card>
+      ) : null}
+      {is.lines.otherOperatingIncome.length ? (
+        <Section title="Other income" lines={is.lines.otherOperatingIncome} total={is.otherOperatingIncome} totalLabel="Total other income" />
+      ) : null}
+      <Section title="Operating expenses" lines={is.lines.operatingExpenses} total={is.distributionCosts + is.adminExpenses + is.otherOpex} totalLabel="Total operating expenses" />
+      {is.financeCosts || is.financeIncome || is.incomeTax ? (
+        <Card>
+          {is.financeIncome ? <AmountLine label="Finance income" value={peso(is.financeIncome)} /> : null}
+          {is.financeCosts ? <AmountLine label="Finance costs" value={peso(-is.financeCosts)} /> : null}
+          <AmountLine label="Profit before tax" value={peso(is.profitBeforeTax)} strong />
+          {is.incomeTax ? <AmountLine label="Income tax" value={peso(-is.incomeTax)} /> : null}
+        </Card>
+      ) : null}
       <Card>
         <View style={styles.bottomLine}>
-          <Txt variant="heading">{pl.netIncome < 0 ? 'Net loss' : 'Net income'}</Txt>
-          <Txt variant="heading" style={{ color: pl.netIncome < 0 ? t.negative : t.positive, fontVariant: ['tabular-nums'] }}>
-            {peso(pl.netIncome)}
+          <Txt variant="heading">{is.netIncome < 0 ? 'Net loss' : 'Net income'}</Txt>
+          <Txt variant="heading" style={{ color: is.netIncome < 0 ? t.negative : t.positive, fontVariant: ['tabular-nums'] }}>
+            {peso(is.netIncome)}
           </Txt>
         </View>
+        <Txt variant="caption" style={{ marginTop: 4 }}>
+          Total expenses incl. cost of sales: {peso(is.totalCOS + expenses)}
+        </Txt>
       </Card>
     </>
   );
@@ -71,35 +94,26 @@ function ProfitAndLoss() {
 
 function BalanceSheet() {
   const t = useTheme();
-  const bs = balanceSheet(useBooks());
-  const balanced = Math.abs(bs.totalAssets - bs.totalLiabilities - bs.totalEquity) < 0.01;
+  const v = useBooksVersion();
+  const today = todayIso();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const bs = useMemo(() => balanceSheet(today), [v, today]);
   return (
     <>
-      <Txt variant="caption">As of {longDate(todayIso())}</Txt>
+      <Txt variant="caption">As of {longDate(today)}</Txt>
+      <Section title="Current assets" lines={bs.currentAssets} total={bs.totalCurrentAssets} totalLabel="Total current assets" />
+      {bs.nonCurrentAssets.length ? <Section title="Non-current assets" lines={bs.nonCurrentAssets} total={bs.totalNonCurrentAssets} totalLabel="Total non-current assets" /> : null}
       <Card>
-        <Txt variant="label">Assets</Txt>
-        {bs.assets.map((r) => (
-          <AmountLine key={r.label} label={r.label} value={peso(r.amount)} indent />
-        ))}
         <AmountLine label="Total assets" value={peso(bs.totalAssets)} strong />
       </Card>
+      <Section title="Current liabilities" lines={bs.currentLiab} total={bs.totalCurrentLiab} totalLabel="Total current liabilities" />
+      {bs.nonCurrentLiab.length ? <Section title="Non-current liabilities" lines={bs.nonCurrentLiab} total={bs.totalNonCurrentLiab} totalLabel="Total non-current liabilities" /> : null}
+      <Section title="Equity" lines={bs.equity} total={bs.totalEquity} totalLabel="Total equity" />
       <Card>
-        <Txt variant="label">Liabilities</Txt>
-        {bs.liabilities.map((r) => (
-          <AmountLine key={r.label} label={r.label} value={peso(r.amount)} indent />
-        ))}
-        <AmountLine label="Total liabilities" value={peso(bs.totalLiabilities)} strong />
-        <View style={{ height: Spacing.three }} />
-        <Txt variant="label">Equity</Txt>
-        {bs.equity.map((r) => (
-          <AmountLine key={r.label} label={r.label} value={peso(r.amount)} indent />
-        ))}
-        <AmountLine label="Total equity" value={peso(bs.totalEquity)} strong />
-        <View style={[styles.rule, { backgroundColor: t.border }]} />
-        <AmountLine label="Total liabilities and equity" value={peso(bs.totalLiabilities + bs.totalEquity)} strong />
+        <AmountLine label="Total liabilities and equity" value={peso(bs.totalLiabAndEquity)} strong />
       </Card>
-      <Txt variant="caption" style={{ color: balanced ? t.positive : t.negative }}>
-        {balanced ? 'Balanced — assets equal liabilities plus equity.' : 'Out of balance — check the books.'}
+      <Txt variant="caption" style={{ color: bs.balanced ? t.positive : t.negative }}>
+        {bs.balanced ? 'Balanced — assets equal liabilities plus equity.' : 'Out of balance — check the books in the web app.'}
       </Txt>
     </>
   );
@@ -107,7 +121,9 @@ function BalanceSheet() {
 
 function Aging() {
   const t = useTheme();
-  const aging = arAging(useBooks());
+  const v = useBooksVersion();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const aging = useMemo(() => arAging(), [v]);
   const colW = 92;
   return (
     <>
@@ -122,54 +138,50 @@ function Aging() {
           </View>
         ))}
       </Card>
-      <Card padded={false}>
-        <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-          <View>
-            <View style={[styles.tr, { borderBottomColor: t.border }]}>
-              <Txt variant="label" style={styles.nameCol}>Customer</Txt>
-              {AGING_BUCKETS.map((b) => (
-                <Txt key={b} variant="label" style={[styles.num, { width: colW }]}>{b}</Txt>
+      {aging.customers.length === 0 ? (
+        <Txt variant="body" color="textSecondary">No unpaid invoices.</Txt>
+      ) : (
+        <Card padded={false}>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+            <View>
+              <View style={[styles.tr, { borderBottomColor: t.border }]}>
+                <Txt variant="label" style={styles.nameCol}>Customer</Txt>
+                {AGING_BUCKETS.map((b) => (
+                  <Txt key={b} variant="label" style={[styles.num, { width: colW }]}>{b}</Txt>
+                ))}
+                <Txt variant="label" style={[styles.num, { width: colW + 12 }]}>Total</Txt>
+              </View>
+              {aging.customers.map((c) => (
+                <View key={c.name} style={[styles.tr, { borderBottomColor: t.border }]}>
+                  <Txt variant="body" style={styles.nameCol} numberOfLines={2}>{c.name}</Txt>
+                  {c.buckets.map((val, i) => (
+                    <Txt key={i} variant="caption" color={val ? 'text' : 'textSecondary'} style={[styles.num, { width: colW }]}>
+                      {val ? peso(val, { decimals: false }) : '—'}
+                    </Txt>
+                  ))}
+                  <Txt variant="figure" style={[styles.num, { width: colW + 12 }]}>{peso(c.total, { decimals: false })}</Txt>
+                </View>
               ))}
-              <Txt variant="label" style={[styles.num, { width: colW + 12 }]}>Total</Txt>
-            </View>
-            {aging.customers.map((c) => (
-              <View key={c.name} style={[styles.tr, { borderBottomColor: t.border }]}>
-                <Txt variant="body" style={styles.nameCol} numberOfLines={2}>{c.name}</Txt>
-                {c.buckets.map((v, i) => (
-                  <Txt key={i} variant="caption" color={v ? 'text' : 'textSecondary'} style={[styles.num, { width: colW }]}>
-                    {v ? peso(v, { decimals: false }) : '—'}
+              <View style={styles.tr}>
+                <Txt variant="bodyStrong" style={styles.nameCol}>Total</Txt>
+                {aging.totals.map((val, i) => (
+                  <Txt key={i} variant="figure" style={[styles.num, { width: colW, fontSize: 13 }]}>
+                    {val ? peso(val, { decimals: false }) : '—'}
                   </Txt>
                 ))}
-                <Txt variant="figure" style={[styles.num, { width: colW + 12 }]}>{peso(c.total, { decimals: false })}</Txt>
+                <Txt variant="figure" style={[styles.num, { width: colW + 12 }]}>{peso(aging.grandTotal, { decimals: false })}</Txt>
               </View>
-            ))}
-            <View style={styles.tr}>
-              <Txt variant="bodyStrong" style={styles.nameCol}>Total</Txt>
-              {aging.totals.map((v, i) => (
-                <Txt key={i} variant="figure" style={[styles.num, { width: colW, fontSize: 13 }]}>
-                  {v ? peso(v, { decimals: false }) : '—'}
-                </Txt>
-              ))}
-              <Txt variant="figure" style={[styles.num, { width: colW + 12 }]}>{peso(aging.grandTotal, { decimals: false })}</Txt>
             </View>
-          </View>
-        </ScrollView>
-      </Card>
-      {aging.customers.length === 0 ? <Txt variant="body" color="textSecondary">No unpaid invoices. Nice.</Txt> : null}
+          </ScrollView>
+        </Card>
+      )}
     </>
   );
 }
 
 const styles = StyleSheet.create({
   bottomLine: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  rule: { height: StyleSheet.hairlineWidth, marginVertical: Spacing.two },
-  tr: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: 10,
-    paddingHorizontal: Spacing.three,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-  },
+  tr: { flexDirection: 'row', alignItems: 'center', paddingVertical: 10, paddingHorizontal: Spacing.three, borderBottomWidth: StyleSheet.hairlineWidth },
   nameCol: { width: 150, paddingRight: Spacing.two },
   num: { textAlign: 'right', fontVariant: ['tabular-nums'] },
 });
