@@ -1,0 +1,51 @@
+{
+  "expo": {
+    "name": "AccounTax Hero",
+    "slug": "accountax-hero",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/images/brand/mark.png",
+    "scheme": "accountaxhero",
+    "userInterfaceStyle": "automatic",
+    "ios": {
+      "icon": "./assets/images/brand/mark.png",
+      "bundleIdentifier": "com.jcapex.accountaxhero",
+      "supportsTablet": true
+    },
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#0b1120",
+        "foregroundImage": "./assets/images/brand/mark.png"
+      },
+      "predictiveBackGestureEnabled": false,
+      "package": "com.jcapex.accountaxhero"
+    },
+    "web": {
+      "output": "single",
+      "favicon": "./assets/images/favicon.png"
+    },
+    "plugins": [
+      "expo-router",
+      [
+        "expo-splash-screen",
+        {
+          "backgroundColor": "#0b1120",
+          "image": "./assets/images/brand/mark.png",
+          "imageWidth": 120
+        }
+      ],
+      "expo-sharing",
+      [
+        "expo-image-picker",
+        {
+          "cameraPermission": "AccounTax Hero uses the camera to photograph receipts for your expense records.",
+          "photosPermission": "AccounTax Hero lets you attach receipt photos from your library."
+        }
+      ]
+    ],
+    "experiments": {
+      "typedRoutes": true,
+      "reactCompiler": true
+    }
+  }
+}
